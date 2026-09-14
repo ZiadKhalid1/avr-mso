@@ -28,13 +28,10 @@ void ADC_Init(ADC_Resolution_t resolution)
         CLR_BIT(ADMUX_Reg, ADLAR_Bit);
     }
 
-    /* Prescaler = 32 (16 MHz / 32 = 500 kHz ADC Clock) */
+    /* Prescaler = 16 (16 MHz / 16 = 1 MHz ADC Clock) */
     SET_BIT(ADCSRA_Reg, ADPS2_Bit);
     CLR_BIT(ADCSRA_Reg, ADPS1_Bit);
-    SET_BIT(ADCSRA_Reg, ADPS0_Bit);
-
-    /* Enable ADC Peripheral */
-    SET_BIT(ADCSRA_Reg, ADEN_Bit);
+    CLR_BIT(ADCSRA_Reg, ADPS0_Bit);
 }
 
 void ADC_StartAutoTrigger(ADC_Channel_t channel, ADC_TriggerSource_t trigger_src)
@@ -48,7 +45,8 @@ void ADC_StartAutoTrigger(ADC_Channel_t channel, ADC_TriggerSource_t trigger_src
     {
         return;
     }
-
+/* Enable ADC Peripheral */
+    SET_BIT(ADCSRA_Reg, ADEN_Bit);
     /* Select analog channel while preserving reference/alignment bits */
     ADMUX_Reg = (ADMUX_Reg & ADC_ADMUX_CFG_MASK) | (channel & ADC_CHANNEL_MASK);
 
@@ -72,13 +70,16 @@ void ADC_StartSingleConversion(ADC_Channel_t channel)
     {
         return;
     }
+    /* Enable ADC */
+    SET_BIT(ADCSRA_Reg, ADEN_Bit);
 
     /* Disable Auto Trigger for manual single-conversion mode */
     CLR_BIT(ADCSRA_Reg, ADATE_Bit);
 
     /* Select target channel */
     ADMUX_Reg = (ADMUX_Reg & ADC_ADMUX_CFG_MASK) | (channel & ADC_CHANNEL_MASK);
-
+    /* Clear flag */
+    SET_BIT(ADCSRA_Reg, ADIF_Bit);
     /* Start conversion */
     SET_BIT(ADCSRA_Reg, ADSC_Bit);
 }
@@ -91,7 +92,10 @@ u8 ADC_ReadSample8Bit(void)
         return 0;
     }
 
-    /* Fast read directly from high byte */
+    while (GET_BIT(ADCSRA_Reg, ADIF_Bit) == 0);
+
+    SET_BIT(ADCSRA_Reg, ADIF_Bit);
+
     return ADCH_Reg;
 }
 
@@ -102,9 +106,9 @@ u16 ADC_ReadSample10Bit(void)
     {
         return 0;
     }
+    while (GET_BIT(ADCSRA_Reg, ADIF_Bit) == 0);
 
-    /* Poll until conversion completes (ADSC clears) */
-    while (GET_BIT(ADCSRA_Reg, ADSC_Bit));
+    SET_BIT(ADCSRA_Reg, ADIF_Bit);
 
     return ADC_Reg;
 }
@@ -130,8 +134,8 @@ void ADC_DisableInterrupt(void)
 
 void ADC_Stop(void)
 {
-    /* Halt active conversions, disable auto-triggering, and mask interrupts */
-    CLR_BIT(ADCSRA_Reg, ADSC_Bit);
+    /* Disable ADC, disable auto-triggering, and mask interrupts */
+    CLR_BIT(ADCSRA_Reg, ADEN_Bit);
     CLR_BIT(ADCSRA_Reg, ADATE_Bit);
     CLR_BIT(ADCSRA_Reg, ADIE_Bit);
 }
