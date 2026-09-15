@@ -1,6 +1,10 @@
 #include "../../LIB/STD_TYPES.h"
 #include "../../LIB/BIT_MATH.h"
 
+#ifndef F_CPU
+#define F_CPU 16000000UL
+#endif
+
 #include "UART_Interface.h"
 #include "UART_Private.h"
 static void (*UART_RxCallback)(u8) = Null;

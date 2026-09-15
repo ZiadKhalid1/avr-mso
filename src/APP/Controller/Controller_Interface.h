@@ -82,7 +82,9 @@ void MSO_Control_Init(void);
 /**
  * @brief  Polls the communication bus for incoming host commands and updates system configuration.
  *
- * @details Non-blocking command parser. Checks the UART RX FIFO and decodes opcodes:
+ * @details Non-blocking command parser. Drains the UART RX FIFO and forwards each byte
+ *          to MSO_Control_HandleKey(). Opcodes are identical to those listed in
+ *          MSO_Control_HandleKey(); any unrecognized byte is safely ignored.
  *          - `'R'` (`0x52`): RUN command -> Transitions state to `MSO_STATE_ARMED`.
  *          - `'S'` (`0x53`): STOP command -> Halts acquisition, transitions to `MSO_STATE_STOPPED`.
  *          - `'O'` (`0x4F`): Selects `MSO_MODE_OSCILLOSCOPE`.
@@ -97,6 +99,24 @@ void MSO_Control_Init(void);
 void MSO_Control_ProcessCommand(void);
 
 /**
+ * @brief  Dispatches a single decoded host opcode.
+ *
+ * @details Pure command dispatcher (no UART coupling). ProcessCommand()
+ *          wraps this in a UART read loop. Useful for host-side tools
+ *          and hostless unit tests that inject bytes directly.
+ *          Valid opcodes:
+ *          - 'R'/'r': RUN (transition to ARMED)
+ *          - 'S'/'s': STOP (halt acquisition)
+ *          - 'O'/'o': Select Oscilloscope mode
+ *          - 'L'/'l': Select Logic Analyzer mode
+ *          - '0'..'7': Set Time/Div scale (enum index)
+ *
+ * @param[in] cmd Single ASCII opcode from the host.
+ * @return None
+ */
+void MSO_Control_HandleKey(u8 cmd);
+
+/**
  * @brief  Executes the active phase of the capture-and-stream state machine.
  *
  * @details Dispatches tasks according to the active `MSO_State_t`:
@@ -106,9 +126,11 @@ void MSO_Control_ProcessCommand(void);
  *            (AC for analog, Pin change for logic), and transitions to `MSO_STATE_CAPTURING`
  *            once triggered.
  *          - `MSO_STATE_CAPTURING`: Samples the input channel at the interval dictated
- *            by the selected Time/Div until the 256-byte buffer is full.
- *          - `MSO_STATE_STREAMING`: Transmits frame header (`0xAA, 0x55`), the 256 raw bytes,
- *            and frame terminator (`0x0D, 0x0A`). Re-arms immediately for continuous capture.
+ *            by the selected Time/Div. OSC: fills a 256-sample buffer; LA: fills a
+ *            512-sample buffer.
+ *          - `MSO_STATE_STREAMING`: Transmits frame header (`0xAA, 0x55`), the raw
+ *            sample payload (256 B for OSC, 512 B for LA), and frame terminator
+ *            (`0x0D, 0x0A`). Re-arms immediately for continuous capture.
  *
  * @param  None
  * @return None

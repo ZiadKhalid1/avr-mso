@@ -45,11 +45,11 @@ TEST_UART_SRC = tests/uart_test.c
 TEST_UART_ELF = $(BUILD_DIR)/tests/uart_test.elf
 TEST_UART_LOG = $(BUILD_DIR)/tests/uartsimout.txt
 
-TEST_FRAME_SRC = tests/frame_test.c
-TEST_FRAME_ELF = $(BUILD_DIR)/tests/frame_test.elf
-TEST_FRAME_LOG = $(BUILD_DIR)/tests/framesimout.txt
+TEST_FRAME_SRC = tests/controller_test.c
+TEST_FRAME_ELF = $(BUILD_DIR)/tests/controller_test.elf
+TEST_FRAME_LOG = $(BUILD_DIR)/tests/controller_test_simout.txt
 
-.PHONY: all lib clean size test test-adc test-ac test-scope test-uart test-frame run-dio run-adc run-ac run-scope run-uart run-frame firmware flash
+.PHONY: all lib clean size test test-adc test-ac test-scope test-uart test-ctrl run-dio run-adc run-ac run-scope run-uart run-ctrl firmware flash run-gui
 
 all: lib size
 
@@ -86,6 +86,10 @@ $(MAIN_HEX): $(MAIN_ELF)
 flash: firmware
 	$(AVRDUDE) -p $(MCU) -c arduino -P $(PORT) -b 115200 -U flash:w:$(MAIN_HEX):i
 
+GUI ?= $(PORT)
+run-gui:
+	python3 tools/gui.py $(GUI)
+
 $(TEST_ELF): $(LIB_FILE) $(TEST_SRC)
 	@mkdir -p $(dir $(TEST_ELF))
 	$(CC) $(CFLAGS) $(TEST_SRC) $(LIB_FILE) -o $@
@@ -111,6 +115,7 @@ $(TEST_FRAME_ELF): $(LIB_FILE) $(TEST_FRAME_SRC)
 	$(CC) $(CFLAGS) $(TEST_FRAME_SRC) $(LIB_FILE) -o $@
 
 run-dio: $(TEST_ELF)
+	@mkdir -p build/tests
 	@rm -f $(TEST_LOG)
 	@echo "== DIO driver test =="
 	-@timeout $(TEST_TIMEOUT) $(SIMAVR) -m $(MCU) $(TEST_ELF) 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' > $(TEST_LOG)
@@ -118,6 +123,7 @@ run-dio: $(TEST_ELF)
 	@echo "---"
 
 run-adc: $(TEST_ADC_ELF)
+	@mkdir -p build/tests
 	@rm -f $(TEST_ADC_LOG)
 	@echo "== ADC driver test =="
 	-@timeout $(TEST_TIMEOUT) $(SIMAVR) -m $(MCU) $(TEST_ADC_ELF) 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' > $(TEST_ADC_LOG)
@@ -125,6 +131,7 @@ run-adc: $(TEST_ADC_ELF)
 	@echo "---"
 
 run-ac: $(TEST_AC_ELF)
+	@mkdir -p build/tests
 	@rm -f $(TEST_AC_LOG)
 	@echo "== AC driver test =="
 	-@timeout $(TEST_TIMEOUT) $(SIMAVR) -m $(MCU) $(TEST_AC_ELF) 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' > $(TEST_AC_LOG)
@@ -132,6 +139,7 @@ run-ac: $(TEST_AC_ELF)
 	@echo "---"
 
 run-scope: $(TEST_SCOPE_ELF)
+	@mkdir -p build/tests
 	@rm -f $(TEST_SCOPE_LOG)
 	@echo "== Scope pipeline test =="
 	-@timeout $(TEST_TIMEOUT) $(SIMAVR) -m $(MCU) $(TEST_SCOPE_ELF) 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' > $(TEST_SCOPE_LOG)
@@ -139,15 +147,17 @@ run-scope: $(TEST_SCOPE_ELF)
 	@echo "---"
 
 run-uart: $(TEST_UART_ELF)
+	@mkdir -p build/tests
 	@rm -f $(TEST_UART_LOG)
 	@echo "== UART driver test =="
 	-@timeout $(TEST_TIMEOUT) $(SIMAVR) -m $(MCU) $(TEST_UART_ELF) 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' > $(TEST_UART_LOG)
 	@cat $(TEST_UART_LOG)
 	@echo "---"
 
-run-frame: $(TEST_FRAME_ELF)
+run-ctrl: $(TEST_FRAME_ELF)
+	@mkdir -p build/tests
 	@rm -f $(TEST_FRAME_LOG)
-	@echo "== Frame streaming test =="
+	@echo "== Controller integration test =="
 	-@timeout $(TEST_TIMEOUT) $(SIMAVR) -m $(MCU) $(TEST_FRAME_ELF) 2>&1 | sed -u 's/\x1b\[[0-9;]*m//g' > $(TEST_FRAME_LOG)
 	@cat $(TEST_FRAME_LOG)
 	@echo "---"
@@ -168,16 +178,16 @@ test-uart: run-uart
 	@grep -a -q 'UART_RESULT PASS' $(TEST_UART_LOG) && echo "RESULT: PASS" && exit 0 \
 		|| (echo "RESULT: FAIL"; exit 1)
 
-test-frame: run-frame
-	@grep -a -q 'FRAME_RESULT PASS' $(TEST_FRAME_LOG) && echo "RESULT: PASS" && exit 0 \
+test-ctrl: run-ctrl
+	@grep -a -q 'CTRL_RESULT PASS' $(TEST_FRAME_LOG) && echo "RESULT: PASS" && exit 0 \
 		|| (echo "RESULT: FAIL"; exit 1)
 
-test: run-dio run-adc run-ac run-scope run-uart run-frame
+test: run-dio run-adc run-ac run-scope run-uart run-ctrl
 	@grep -a -q 'DIO_RESULT PASS' $(TEST_LOG) && grep -a -q 'ADC_RESULT PASS' $(TEST_ADC_LOG) \
 		&& grep -a -q 'AC_RESULT PASS' $(TEST_AC_LOG) \
 		&& grep -a -q 'SCOPE_RESULT PASS' $(TEST_SCOPE_LOG) \
 		&& grep -a -q 'UART_RESULT PASS' $(TEST_UART_LOG) \
-		&& grep -a -q 'FRAME_RESULT PASS' $(TEST_FRAME_LOG) \
+		&& grep -a -q 'CTRL_RESULT PASS' $(TEST_FRAME_LOG) \
 		&& echo "RESULT: PASS" && exit 0 \
 		|| (echo "RESULT: FAIL"; exit 1)
 

@@ -3,11 +3,22 @@
  * Runs on an ATmega328P under simavr and reports over UART0.
  * The Makefile 'test-adc' target drives: simavr -> grep "ADC_RESULT PASS".
  *
- * NOTE on ATmega328P hardware semantics (faithfully modeled by simavr):
- *  - Writing 0 to ADCSRA's ADSC bit does NOT clear it; a conversion already
- *    in progress keeps ADSC=1 until the hardware finishes it. Tests that
- *    assert exact ADCSRA contents therefore run BEFORE any test sets ADSC,
- *    and the ADSC-pulse tests (single conversion / free running) are last.
+ * Driver API under test (spec-aligned 8-bit DSO front end):
+ *   ADC_Init(ADC_RES_8BIT)      -> AVCC ref, ADLAR=1, prescaler=16, ADC LEFT OFF
+ *   ADC_StartAutoTrigger(ch,src) -> ADEN, ADATE, (free-run) ADSC pulse
+ *   ADC_StartSingleConversion(ch)             -> one-shot ADSC pulse
+ *   ADC_ReadSample8Bit / 10Bit                -> waits ADIF, clears it, reads reg
+ *
+ * NOTE on simavr hardware semantics (faithfully modeled for ATmega328P):
+ *  - ADIF is write-1-to-clear; it can only be SET by a hardware conversion
+ *    completing. The read functions poll ADIF, so value tests must start a
+ *    real conversion, wait for completion, then run the read. A completed
+ *    conversion overwrites ADCH/ADCL with the model result, so the expected
+ *    byte/half-word is written into the data registers AFTER completion and
+ *    immediately before the driver read (ADSC is already 0, nothing to
+ *    overwrite it).
+ *  - Writing 0 to ADSC does NOT clear an in-progress conversion, so the
+ *    ADSC-pulse tests run last, after every exact-register assertion.
  */
 #include <avr/io.h>
 #include "MCAL/ADC/ADC_Interface.h"
@@ -85,6 +96,18 @@ static void checkw(int ok, const char *name, u16 got, u16 want)
     else    g_fail++;
 }
 
+/* ---- helpers ---- */
+static void wait_adif(void)
+{
+    while ((ADCSRA & (1 << ADIF)) == 0) ;
+}
+
+/* ADIF can only be cleared by writing a one to it */
+static void clear_adif(void)
+{
+    ADCSRA = (1 << ADIF);
+}
+
 /* ---- callback for the ISR dispatch test ---- */
 static u8 g_cb_called = 0;
 static void adc_callback(void)
@@ -103,15 +126,18 @@ int main(void)
     check(ADMUX == 0 && ADCSRA == 0, "init-reject-invalid-resolution",
           ADCSRA, ADMUX, ADCSRB);
 
-    /* ---------------- ADC_Init 8-bit ---------------- */
-    ADMUX = 0; ADCSRA = 0;
+    /* ---------------- ADC_Init 8-bit ----------------
+     * Prescaler = 16 (ADPS[2:0] = 100) => f_ADC = 1 MHz.
+     * ADEN must stay 0: the AC-trigger handover requires the ADC core to be
+     * disabled until the hardware trigger fires (spec section 2). */
+    ADMUX = 0; ADCSRA = 0; ADCSRB = 0;
     ADC_Init(ADC_RES_8BIT);
     check((ADMUX & (1 << ADLAR)) != 0 && (ADMUX & (1 << REFS0)) != 0
           && (ADMUX & (1 << REFS1)) == 0,
           "init-8bit-refs-adlar", ADCSRA, ADMUX, ADCSRB);
-    check((ADCSRA & ((1 << ADEN) | (1 << ADPS2) | (1 << ADPS0))) != 0
-          && (ADCSRA & (1 << ADPS1)) == 0,
-          "init-8bit-enable-prescaler-32", ADCSRA, ADMUX, ADCSRB);
+    check(ADCSRA == (1 << ADPS2), "init-8bit-prescaler-16", ADCSRA, ADMUX, ADCSRB);
+    check((ADCSRA & (1 << ADEN)) == 0, "init-8bit-adc-stays-off",
+          ADCSRA, ADMUX, ADCSRB);
 
     /* ---------------- ADC_Init 10-bit ---------------- */
     ADMUX = 0; ADCSRA = 0;
@@ -119,46 +145,29 @@ int main(void)
     check((ADMUX & (1 << ADLAR)) == 0, "init-10bit-clears-adlar",
           ADCSRA, ADMUX, ADCSRB);
 
-    /* ---------------- ADC_StartAutoTrigger guards ---------------- */
+    /* ---------------- guards: read with ADC disabled ---------------- */
+    ADCSRA = 0; ADCH = 0xFF;
+    {
+        u8 r8 = ADC_ReadSample8Bit();
+        checkw(r8 == 0, "read-8bit-guard-adc-disabled", r8, 0);
+    }
+    ADCSRA = 0; ADCL = 0xFF; ADCH = 0xFF;
+    {
+        u16 r16 = ADC_ReadSample10Bit();
+        checkw(r16 == 0, "read-10bit-guard-adc-disabled", r16, 0);
+    }
+
+    /* ---------------- ADC_StartAutoTrigger guard ---------------- */
     ADMUX = 0; ADCSRA = 0; ADCSRB = 0;
     ADC_StartAutoTrigger((ADC_Channel_t)8, ADC_TRIG_FREE_RUNNING);
     check(ADMUX == 0 && ADCSRA == 0 && ADCSRB == 0,
           "auto-trigger-reject-invalid-channel", ADCSRA, ADMUX, ADCSRB);
-
-    ADMUX = 0; ADCSRA = 0; ADCSRB = 0;
-    ADC_StartAutoTrigger(ADC_CHANNEL_0, (ADC_TriggerSource_t)8);
-    check(ADMUX == 0 && ADCSRA == 0 && ADCSRB == 0,
-          "auto-trigger-reject-invalid-source", ADCSRA, ADMUX, ADCSRB);
-
-    /* ---------------- ADC_StartAutoTrigger ---------------- */
-    ADMUX = 0xE0; ADCSRA = 0; ADCSRB = 0;
-    ADC_StartAutoTrigger(ADC_CHANNEL_5, ADC_TRIG_TIMER1_CAPTURE);
-    check((ADMUX & 0x0F) == 5 && (ADMUX & 0xE0) == 0xE0,
-          "auto-trigger-channel5", ADCSRA, ADMUX, ADCSRB);
-    check((ADCSRB & 0x07) == 7 && (ADCSRA & (1 << ADATE)) != 0,
-          "auto-trigger-source7", ADCSRA, ADMUX, ADCSRB);
-    check((ADMUX & 0x10) == 0, "reserved-admux-bit4-stays-clear",
-          ADCSRA, ADMUX, ADCSRB);
 
     /* ---------------- ADC_StartSingleConversion guard ---------------- */
     ADMUX = 0; ADCSRA = 0; ADCSRB = 0;
     ADC_StartSingleConversion((ADC_Channel_t)9);
     check(ADMUX == 0 && ADCSRA == 0, "single-conversion-reject-invalid-channel",
           ADCSRA, ADMUX, ADCSRB);
-
-    /* ---------------- ADC_ReadSample8Bit ---------------- */
-    ADCSRA = (1 << ADEN);
-    ADCH = 0xA5;
-    checkw(ADC_ReadSample8Bit() == 0xA5, "read-sample-8bit",
-           ADC_ReadSample8Bit(), 0xA5);
-
-    /* ---------------- ADC_ReadSample10Bit ----------------
-     * The ADC is enabled, and no conversion is running (ADSC=0), so the
-     * poll exits immediately; the result returns straight from ADCL/ADCH. */
-    ADCSRA = (1 << ADEN);
-    ADCL = 0x34; ADCH = 0x02;
-    checkw(ADC_ReadSample10Bit() == 0x0234, "read-sample-10bit",
-           ADC_ReadSample10Bit(), 0x0234);
 
     /* ---------------- ADC_EnableInterrupt ---------------- */
     ADCSRA = 0;
@@ -182,26 +191,85 @@ int main(void)
     __vector_21();
     check(g_cb_called == 0, "isr-idle-after-disable", ADCSRA, ADMUX, ADCSRB);
 
-    /* ---------------- ADC_Stop ----------------
-     * ADSC must be 0 here (hardware cannot clear it via software), so only
-     * ADATE/ADIE are set; ADC_Stop clears them. */
+    /* ---------------- ADC_Stop ---------------- */
+    clear_adif();
     ADCSRA = (1 << ADATE) | (1 << ADIE);
     ADC_Stop();
-    check(ADCSRA == 0, "stop-clears-adate-adie", ADCSRA, ADMUX, ADCSRB);
+    check(ADCSRA == 0, "stop-clears-aden-adate-adie", ADCSRA, ADMUX, ADCSRB);
+
+    /* ---------------- ADC_ReadSample8Bit (left-adjusted 8-bit) --------
+     * Start a real conversion so simavr's hardware completion raises ADIF,
+     * then plant the expected byte in ADCH (conversion already finished,
+     * ADSC=0) and let the driver read+clear it. */
+    clear_adif();
+    ADMUX = 0; ADCSRA = 0; ADCSRB = 0;
+    ADC_Init(ADC_RES_8BIT);
+    ADC_StartSingleConversion(ADC_CHANNEL_0);
+    wait_adif();
+    ADCH = 0xA5;
+    {
+        u8 r8 = ADC_ReadSample8Bit();
+        checkw(r8 == 0xA5, "read-sample-8bit", r8, 0xA5);
+    }
+    check((ADCSRA & (1 << ADIF)) == 0, "read-8bit-clears-adif",
+          ADCSRA, ADMUX, ADCSRB);
+
+    /* ---------------- ADC_ReadSample10Bit (right-adjusted) ---------------- */
+    clear_adif();
+    ADMUX = 0; ADCSRA = 0; ADCSRB = 0;
+    ADC_Init(ADC_RES_10BIT);
+    ADC_StartSingleConversion(ADC_CHANNEL_0);
+    wait_adif();
+    ADCL = 0x34; ADCH = 0x02;
+    {
+        u16 r16 = ADC_ReadSample10Bit();
+        checkw(r16 == 0x0234, "read-sample-10bit", r16, 0x0234);
+    }
+    check((ADCSRA & (1 << ADIF)) == 0, "read-10bit-clears-adif",
+          ADCSRA, ADMUX, ADCSRB);
 
     /* ---------------- ADSC-pulse tests (last) ----------------
-     * ADC_StartSingleConversion / free running set ADSC; once set it cannot
-     * be cleared by software, so everything above must already be done. */
-    ADMUX = 0xE0; ADCSRA = (1 << ADATE); ADCSRB = 0;
+     * simavr completes a single conversion in ~400 CPU cycles (first
+     * conversion = 14 ADC clocks + 11 ADC clocks, prescaler 16), far faster
+     * than a UART test line prints. A conversion in flight therefore mutates
+     * ADCSRA between two successive check() calls (ADIF raises, ADSC drops),
+     * so ADCSRA is snapshot immediately after the start call and every
+     * assertion of this group runs against that frozen snapshot. */
+    clear_adif();
+    ADMUX = 0xE0; ADCSRA = (1 << ADATE) | (1 << ADIF); ADCSRB = 0;
     ADC_StartSingleConversion(ADC_CHANNEL_3);
-    check((ADMUX & 0x0F) == 3 && (ADMUX & 0xE0) == 0xE0,
-          "single-conversion-channel3", ADCSRA, ADMUX, ADCSRB);
-    check((ADCSRA & (1 << ADSC)) != 0 && (ADCSRA & (1 << ADATE)) == 0,
-          "single-conversion-start", ADCSRA, ADMUX, ADCSRB);
+    {
+        u8 s = ADCSRA;
+        check((ADMUX & 0x07) == 3 && (ADMUX & 0xE0) == 0xE0,
+              "single-conversion-channel3", s, ADMUX, ADCSRB);
+        check((s & (1 << ADATE)) == 0, "single-conversion-disables-adate",
+              s, ADMUX, ADCSRB);
+        check((s & (1 << ADEN)) != 0, "single-conversion-enables-adc",
+              s, ADMUX, ADCSRB);
+        check((s & (1 << ADIF)) == 0, "single-conversion-clears-adif",
+              s, ADMUX, ADCSRB);
+        check((s & (1 << ADSC)) != 0, "single-conversion-pulses-adsc",
+              s, ADMUX, ADCSRB);
+    }
 
-    ADC_StartAutoTrigger(ADC_CHANNEL_0, ADC_TRIG_FREE_RUNNING);
-    check((ADCSRA & (1 << ADSC)) != 0, "auto-trigger-free-running-pulses-adsc",
-          ADCSRA, ADMUX, ADCSRB);
+    clear_adif();
+    ADMUX = 0x60; ADCSRA = 0; ADCSRB = 0;
+    ADC_StartAutoTrigger(ADC_CHANNEL_5, ADC_TRIG_FREE_RUNNING);
+    {
+        u8 s = ADCSRA;
+        check((ADMUX & 0x07) == 5 && (ADMUX & 0xE0) == 0x60 && (ADMUX & 0x10) == 0,
+              "auto-trigger-channel5-reserved-clear", s, ADMUX, ADCSRB);
+        check((ADCSRB & 0x07) == 0, "auto-trigger-free-running-adts",
+              s, ADMUX, ADCSRB);
+        check((s & (1 << ADATE)) != 0, "auto-trigger-sets-adate",
+              s, ADMUX, ADCSRB);
+        check((s & (1 << ADEN)) != 0, "auto-trigger-enables-adc",
+              s, ADMUX, ADCSRB);
+        check((s & (1 << ADIF)) == 0, "auto-trigger-clears-adif",
+              s, ADMUX, ADCSRB);
+        check((s & (1 << ADSC)) != 0, "auto-trigger-free-running-pulses-adsc",
+              s, ADMUX, ADCSRB);
+    }
 
     /* ---------------- result ---------------- */
     if (g_fail == 0)

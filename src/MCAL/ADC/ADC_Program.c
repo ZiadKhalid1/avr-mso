@@ -56,11 +56,8 @@ void ADC_StartAutoTrigger(ADC_Channel_t channel, ADC_TriggerSource_t trigger_src
     /* Enable Auto Trigger feature */
     SET_BIT(ADCSRA_Reg, ADATE_Bit);
 
-    if (trigger_src == ADC_TRIG_FREE_RUNNING)
-    {
-        /* Free-running mode requires a manual start conversion pulse */
-        SET_BIT(ADCSRA_Reg, ADSC_Bit);
-    }
+    /* Start the initial conversion pulse (required per ATmega328P datasheet) */
+    SET_BIT(ADCSRA_Reg, ADSC_Bit);
 }
 
 void ADC_StartSingleConversion(ADC_Channel_t channel)
